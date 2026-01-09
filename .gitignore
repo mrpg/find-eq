@@ -1,0 +1,9 @@
+build/
+.claude
+.coverage
+dist/
+*.egg-info
+__pycache__/
+*.py[oc]
+.venv
+wheels/
