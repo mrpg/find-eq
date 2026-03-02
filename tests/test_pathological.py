@@ -243,13 +243,16 @@ class TestTangentCurves:
         assert eq.price_max == Decimal("5")
 
     def test_curves_just_miss(self) -> None:
-        """Highest bid is epsilon below lowest ask - no trade."""
+        """Highest bid is epsilon below lowest ask - no trade, but equilibrium exists."""
         bids = [Decimal("4.99"), Decimal("4"), Decimal("3")]
         asks = [Decimal("5"), Decimal("6"), Decimal("7")]
 
         eq = find_equilibrium(bids, asks)
 
-        assert eq is None
+        assert eq is not None
+        assert eq.quantity == 0
+        assert eq.price_min == Decimal("4.99")
+        assert eq.price_max == Decimal("5")
 
 
 class TestMassiveIndifference:
@@ -293,7 +296,10 @@ class TestDisjointRanges:
 
         eq = find_equilibrium(bids, asks)
 
-        assert eq is None
+        assert eq is not None
+        assert eq.quantity == 0
+        assert eq.price_min == Decimal("10")
+        assert eq.price_max == Decimal("100")
 
     def test_adjacent_ranges(self) -> None:
         """Max bid == min ask exactly."""

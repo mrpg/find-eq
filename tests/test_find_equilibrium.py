@@ -11,8 +11,8 @@ import pytest
 from find_eq import Equilibrium, find_equilibrium
 
 
-class TestNoTrade:
-    """Cases where no equilibrium exists."""
+class TestNoMarket:
+    """Cases where no market exists (empty input)."""
 
     def test_empty_bids(self) -> None:
         assert find_equilibrium([], [Decimal("5")]) is None
@@ -23,14 +23,28 @@ class TestNoTrade:
     def test_both_empty(self) -> None:
         assert find_equilibrium([], []) is None
 
+
+class TestNoTrade:
+    """Cases where equilibrium exists but no trade occurs (quantity = 0)."""
+
     def test_no_gains_from_trade(self) -> None:
         # All buyers value the good less than all sellers' costs.
         bids = [Decimal("3"), Decimal("2"), Decimal("1")]
         asks = [Decimal("4"), Decimal("5"), Decimal("6")]
-        assert find_equilibrium(bids, asks) is None
+        eq = find_equilibrium(bids, asks)
+
+        assert eq is not None
+        assert eq.quantity == 0
+        assert eq.price_min == Decimal("3")
+        assert eq.price_max == Decimal("4")
 
     def test_single_bid_below_single_ask(self) -> None:
-        assert find_equilibrium([Decimal("5")], [Decimal("6")]) is None
+        eq = find_equilibrium([Decimal("5")], [Decimal("6")])
+
+        assert eq is not None
+        assert eq.quantity == 0
+        assert eq.price_min == Decimal("5")
+        assert eq.price_max == Decimal("6")
 
 
 class TestBasicEquilibrium:
@@ -350,8 +364,14 @@ class TestMyersonSatterthwaite:
         """Single buyer, single seller with no gains from trade.
 
         Impossibility doesn't apply: there's simply no efficient trade.
+        Equilibrium exists at quantity 0 with price in [50, 100].
         """
-        assert find_equilibrium([Decimal("50")], [Decimal("100")]) is None
+        eq = find_equilibrium([Decimal("50")], [Decimal("100")])
+
+        assert eq is not None
+        assert eq.quantity == 0
+        assert eq.price_min == Decimal("50")
+        assert eq.price_max == Decimal("100")
 
     def test_knife_edge_bilateral(self) -> None:
         """Buyer valuation exactly equals seller cost.

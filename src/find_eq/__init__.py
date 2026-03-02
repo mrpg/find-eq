@@ -34,8 +34,9 @@ def find_equilibrium(bids: list[Decimal], asks: list[Decimal]) -> Equilibrium | 
 
     Returns:
         An Equilibrium object containing the clearing price interval and
-        quantity, or None if no trade is possible (i.e., all asks exceed
-        all bids).
+        quantity. When no trade is possible (all asks exceed all bids),
+        quantity is 0 and the price interval spans [max(bids), min(asks)].
+        Returns None only if bids or asks is empty (no market exists).
 
     Example:
         >>> from decimal import Decimal
@@ -72,7 +73,13 @@ def find_equilibrium(bids: list[Decimal], asks: list[Decimal]) -> Equilibrium | 
             break
 
     if max_quantity == 0:
-        return None
+        # No trade, but an equilibrium still exists: any price in
+        # [max(bids), min(asks)] clears the market at quantity 0.
+        return Equilibrium(
+            price_min=bids_sorted[0],
+            price_max=asks_sorted[0],
+            quantity=0,
+        )
 
     # The clearing price interval [p_min, p_max] must ensure demand == supply.
     # Start with marginal traders' values.
