@@ -6,6 +6,12 @@ on:
   pull_request:
     branches: [master]
 
+permissions:
+  contents: read
+
+env:
+  FORCE_COLOR: "1"
+
 jobs:
   test:
     name: Test (Python ${{ matrix.python-version }}, ${{ matrix.os }})
@@ -14,63 +20,68 @@ jobs:
       fail-fast: false
       matrix:
         os: [ubuntu-latest, macos-latest, windows-latest]
-        python-version: ["3.13"]
+        python-version: ["3.13", "3.14"]
 
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
 
       - name: Install uv
-        uses: astral-sh/setup-uv@v4
+        uses: astral-sh/setup-uv@v7
         with:
-          version: "latest"
+          enable-cache: true
 
       - name: Set up Python ${{ matrix.python-version }}
         run: uv python install ${{ matrix.python-version }}
 
       - name: Install dependencies
-        run: uv sync --dev
+        run: uv sync --locked --dev --python ${{ matrix.python-version }}
 
+      # Many more random markets than a local run, since a property test is
+      # only as strong as the number of examples it gets to try.
       - name: Run tests
-        run: uv run pytest -v
+        run: uv run --no-sync pytest -v --hypothesis-profile=ci
 
-  typecheck:
-    name: Type check
+  quality:
+    name: ${{ matrix.name }}
     runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - name: Lint (ruff)
+            command: uv run --no-sync ruff check --output-format=github .
+          - name: Format (black)
+            command: uv run --no-sync black --check --diff .
+          - name: Imports (isort)
+            command: uv run --no-sync isort --check-only --diff .
+          - name: Type check (mypy)
+            command: uv run --no-sync mypy
+          - name: Lockfile is current
+            command: uv lock --check
+          - name: Package
+            command: >-
+              uv build --force-pep517 --no-sources &&
+              uv build --force-pep517 --wheel --no-sources
+              --out-dir dist/from-sdist dist/*.tar.gz &&
+              cmp dist/*.whl dist/from-sdist/*.whl &&
+              uv venv --python 3.13 dist/verify-venv &&
+              uv pip install --python dist/verify-venv/bin/python dist/*.whl &&
+              dist/verify-venv/bin/python -I -c
+              "from find_eq import find_equilibrium; assert find_equilibrium([2], [1]).quantity == 1"
 
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
 
       - name: Install uv
-        uses: astral-sh/setup-uv@v4
+        uses: astral-sh/setup-uv@v7
         with:
-          version: "latest"
+          enable-cache: true
 
       - name: Set up Python
         run: uv python install 3.13
 
       - name: Install dependencies
-        run: uv sync --dev
+        run: uv sync --locked --dev
 
-      - name: Run mypy
-        run: uv run mypy src/
-
-  lint:
-    name: Lint
-    runs-on: ubuntu-latest
-
-    steps:
-      - uses: actions/checkout@v4
-
-      - name: Install uv
-        uses: astral-sh/setup-uv@v4
-        with:
-          version: "latest"
-
-      - name: Set up Python
-        run: uv python install 3.13
-
-      - name: Install dependencies
-        run: uv sync --dev
-
-      - name: Check formatting with black
-        run: uv run black --check --diff src/ tests/
+      - name: ${{ matrix.name }}
+        run: ${{ matrix.command }}

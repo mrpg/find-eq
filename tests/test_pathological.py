@@ -1,3 +1,6 @@
+# Copyright (C) 2026 by Max R. P. Grossmann <m@max.pm>
+# SPDX-License-Identifier: 0BSD
+
 """Pathological edge cases from Micro 101 - extreme market scenarios.
 
 These tests probe boundary conditions that might cause numerical,
@@ -56,10 +59,10 @@ class TestNegativePrices:
 
         eq = find_equilibrium(bids, asks)
 
-        assert eq is not None
-        # bid[0]=10 >= ask[0]=-10 ✓ (huge surplus)
-        # bid[1]=0 >= ask[1]=5? No.
-        assert eq.quantity == 1
+        # bid[0]=10 >= ask[0]=-10, but bid[1]=0 < ask[1]=5, so one unit
+        # trades. The interval is pinned by the excluded traders on both
+        # sides: [max(-10, 0), min(10, 5)].
+        assert eq == Equilibrium(price_min=Decimal("0"), price_max=Decimal("5"), quantity=1)
 
 
 class TestZeroPrices:
@@ -138,16 +141,16 @@ class TestExtremeValues:
 
         eq = find_equilibrium(bids, asks)
 
-        assert eq is not None
-        # 1e12 >= 1e-15 ✓, 1 >= 0.5 ✓, 1e-12 >= 1e9? No.
-        assert eq.quantity == 2
+        # 1e12 >= 1e-15 and 1 >= 0.5, but 1e-12 < 1e9, so two units trade
+        # across 27 orders of magnitude with no loss of precision.
+        assert eq == Equilibrium(price_min=Decimal("0.5"), price_max=Decimal("1"), quantity=2)
 
 
-class TestPerfectlyInelasticCurves:
-    """Vertical demand or supply curves (perfectly inelastic)."""
+class TestIdenticalReservationValues:
+    """Repeated values with equal and unequal numbers of agents."""
 
-    def test_vertical_demand_vertical_supply_same_q(self) -> None:
-        """Both curves vertical at same quantity."""
+    def test_equal_side_sizes_at_distinct_values(self) -> None:
+        """Equal side sizes leave the whole surplus interval available."""
         bids = [Decimal("100")] * 5  # 5 buyers, all pay up to 100.
         asks = [Decimal("10")] * 5  # 5 sellers, all accept 10 or more.
 
@@ -159,13 +162,8 @@ class TestPerfectlyInelasticCurves:
         assert eq.price_min == Decimal("10")
         assert eq.price_max == Decimal("100")
 
-    def test_vertical_demand_vertical_supply_different_q(self) -> None:
-        """Vertical curves at different quantities - short side wins.
-
-        This is a fascinating pathological case: when there are excess
-        identical sellers, the excluded sellers (also at price 10)
-        constrain price_max to 10, collapsing the interval to a point.
-        """
+    def test_excess_identical_sellers_collapse_the_interval(self) -> None:
+        """An excluded seller at the same ask supplies the upper bound."""
         bids = [Decimal("100")] * 3  # 3 buyers.
         asks = [Decimal("10")] * 7  # 7 sellers.
 
@@ -207,13 +205,13 @@ class TestPerfectlyInelasticCurves:
         assert eq.price_max == Decimal("50")
 
 
-class TestPerfectlyElasticCurves:
-    """Horizontal demand or supply curves (perfectly elastic)."""
+class TestFlatAskSchedule:
+    """A repeated ask value against a strictly descending bid schedule."""
 
     def test_horizontal_supply_meets_downward_demand(self) -> None:
         """All sellers at same price, buyers with varying valuations."""
         bids = [Decimal("100"), Decimal("80"), Decimal("60"), Decimal("40"), Decimal("20")]
-        asks = [Decimal("50")] * 10  # Perfectly elastic supply at 50.
+        asks = [Decimal("50")] * 10
 
         eq = find_equilibrium(bids, asks)
 
@@ -226,11 +224,11 @@ class TestPerfectlyElasticCurves:
         assert eq.price_max == Decimal("50")
 
 
-class TestTangentCurves:
-    """Supply and demand curves that just touch at one point."""
+class TestMarginalEqualityAndGap:
+    """The best bid either equals or narrowly misses the best ask."""
 
-    def test_single_tangent_point(self) -> None:
-        """Curves intersect at exactly one bid-ask pair."""
+    def test_single_zero_surplus_pair(self) -> None:
+        """Exactly one bid-ask pair has non-negative surplus."""
         bids = [Decimal("5"), Decimal("4"), Decimal("3")]
         asks = [Decimal("5"), Decimal("6"), Decimal("7")]
 
@@ -268,7 +266,7 @@ class TestMassiveIndifference:
 
         assert eq is not None
         assert eq.quantity == n
-        # All buy at 100, all sell at 50 → interval [50, 100].
+        # All bids are 100 and all asks are 50, leaving interval [50, 100].
         assert eq.price_min == Decimal("50")
         assert eq.price_max == Decimal("100")
 
@@ -335,7 +333,7 @@ class TestSingleTrader:
         assert eq.price_max == Decimal("100")
 
     def test_single_bid_single_ask_equal(self) -> None:
-        """Bilateral monopoly with zero surplus."""
+        """A bilateral market with zero surplus."""
         eq = find_equilibrium([Decimal("75")], [Decimal("75")])
 
         assert eq is not None
@@ -423,7 +421,7 @@ class TestEconomicInvariants:
     """Verify economic properties hold for pathological cases."""
 
     @pytest.mark.parametrize(
-        "bids,asks",
+        ("bids", "asks"),
         [
             # Negative prices.
             (
@@ -445,7 +443,7 @@ class TestEconomicInvariants:
                 [Decimal("50")] * 100,
                 [Decimal("50")] * 100,
             ),
-            # Single point tangent.
+            # A single zero-surplus pair.
             (
                 [Decimal("10"), Decimal("5")],
                 [Decimal("10"), Decimal("15")],
@@ -455,11 +453,11 @@ class TestEconomicInvariants:
     def test_price_interval_valid(self, bids: list[Decimal], asks: list[Decimal]) -> None:
         """Price min <= price max for all equilibria."""
         eq = find_equilibrium(bids, asks)
-        if eq is not None:
-            assert eq.price_min <= eq.price_max
+        assert eq is not None
+        assert eq.price_min <= eq.price_max
 
     @pytest.mark.parametrize(
-        "bids,asks",
+        ("bids", "asks"),
         [
             # Negative prices.
             (
@@ -481,21 +479,23 @@ class TestEconomicInvariants:
     def test_market_clears_at_equilibrium_price(
         self, bids: list[Decimal], asks: list[Decimal]
     ) -> None:
-        """Demand equals supply at any price in the interval."""
+        """Every sampled interval price satisfies the defining bounds."""
         eq = find_equilibrium(bids, asks)
-        if eq is None:
-            return
+        assert eq is not None
 
         for price in [eq.price_min, eq.price_max, (eq.price_min + eq.price_max) / 2]:
-            demand = sum(1 for b in bids if b >= price)
-            supply = sum(1 for a in asks if a <= price)
-            assert min(demand, supply) == eq.quantity
+            strict_demand = sum(1 for bid in bids if bid > price)
+            weak_demand = sum(1 for bid in bids if bid >= price)
+            strict_supply = sum(1 for ask in asks if ask < price)
+            weak_supply = sum(1 for ask in asks if ask <= price)
+            assert strict_demand <= eq.quantity <= weak_demand
+            assert strict_supply <= eq.quantity <= weak_supply
 
 
 class TestPriceIndeterminacy:
     """Cases with maximal price indeterminacy (wide intervals)."""
 
-    def test_bilateral_monopoly_huge_surplus(self) -> None:
+    def test_bilateral_market_huge_surplus(self) -> None:
         """Single buyer/seller with massive gains from trade."""
         bids = [Decimal("1000000")]
         asks = [Decimal("1")]
@@ -527,19 +527,17 @@ class TestPriceIndeterminacy:
 class TestQuantityEdgeCases:
     """Edge cases around the quantity traded."""
 
-    def test_all_trade_minimum_surplus(self) -> None:
-        """Every trade has exactly zero surplus."""
+    def test_one_positive_and_one_zero_surplus_trade(self) -> None:
+        """The maximal allocation includes its zero-surplus marginal pair."""
         bids = [Decimal("5"), Decimal("4"), Decimal("3")]
         asks = [Decimal("5"), Decimal("4"), Decimal("3")]
 
         eq = find_equilibrium(bids, asks)
 
-        assert eq is not None
-        # Sorted: bids [5,4,3], asks [3,4,5].
-        # bid[0]=5 >= ask[0]=3 ✓
-        # bid[1]=4 >= ask[1]=4 ✓
-        # bid[2]=3 >= ask[2]=5? No.
-        assert eq.quantity == 2
+        # Sorted: bids [5, 4, 3], asks [3, 4, 5]. The second pair breaks even
+        # at 4 >= 4, the third fails at 3 < 5, and the interval collapses to
+        # the single point 4 where the marginal pair is indifferent.
+        assert eq == Equilibrium(price_min=Decimal("4"), price_max=Decimal("4"), quantity=2)
 
     def test_only_first_trade_profitable(self) -> None:
         """Rapidly diverging curves."""

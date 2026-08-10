@@ -1,18 +1,37 @@
+# Copyright (C) 2026 by Max R. P. Grossmann <m@max.pm>
+# SPDX-License-Identifier: 0BSD
+
 """Tests for double auction market clearing.
 
 These tests verify both algorithmic correctness and economic properties
 of the competitive equilibrium.
 """
 
+from dataclasses import dataclass
 from decimal import Decimal
+from fractions import Fraction
+from typing import Self, get_type_hints
 
 import pytest
 
 from find_eq import Equilibrium, find_equilibrium
 
 
-class TestNoMarket:
-    """Cases where no market exists (empty input)."""
+@dataclass(frozen=True, slots=True, order=False, eq=False)
+class _Bare:
+    """A price type implementing exactly the `Ordered` protocol, and no more."""
+
+    value: int
+
+    def __lt__(self, other: Self) -> bool:
+        return self.value < other.value
+
+    def __le__(self, other: Self) -> bool:
+        return self.value <= other.value
+
+
+class TestEmptySides:
+    """Empty-side markets have unbounded price sets and return `None`."""
 
     def test_empty_bids(self) -> None:
         assert find_equilibrium([], [Decimal("5")]) is None
@@ -142,7 +161,7 @@ class TestEconomicProperties:
     """Verify fundamental economic invariants hold."""
 
     @pytest.mark.parametrize(
-        "bids,asks",
+        ("bids", "asks"),
         [
             ([Decimal("10")], [Decimal("5")]),
             (
@@ -165,7 +184,7 @@ class TestEconomicProperties:
         assert eq.price_min <= eq.price_max
 
     @pytest.mark.parametrize(
-        "bids,asks",
+        ("bids", "asks"),
         [
             (
                 [Decimal("10"), Decimal("8"), Decimal("6")],
@@ -193,7 +212,7 @@ class TestEconomicProperties:
             assert bids_sorted[i] >= asks_sorted[i]
 
     @pytest.mark.parametrize(
-        "bids,asks",
+        ("bids", "asks"),
         [
             (
                 [Decimal("10"), Decimal("8"), Decimal("6")],
@@ -220,7 +239,7 @@ class TestEconomicProperties:
             assert bids_sorted[eq.quantity] < asks_sorted[eq.quantity]
 
     @pytest.mark.parametrize(
-        "bids,asks",
+        ("bids", "asks"),
         [
             (
                 [Decimal("10"), Decimal("8"), Decimal("6")],
@@ -232,15 +251,20 @@ class TestEconomicProperties:
             ),
         ],
     )
-    def test_price_clears_market(self, bids: list[Decimal], asks: list[Decimal]) -> None:
-        """Any price in [price_min, price_max] induces exactly eq.quantity trades."""
+    def test_price_satisfies_strict_and_weak_participation_bounds(
+        self, bids: list[Decimal], asks: list[Decimal]
+    ) -> None:
+        """Every sampled interval price satisfies the defining inequalities."""
         eq = find_equilibrium(bids, asks)
         assert eq is not None
 
         for price in [eq.price_min, eq.price_max, (eq.price_min + eq.price_max) / 2]:
-            demand = sum(1 for b in bids if b >= price)
-            supply = sum(1 for a in asks if a <= price)
-            assert min(demand, supply) == eq.quantity
+            strict_demand = sum(1 for bid in bids if bid > price)
+            weak_demand = sum(1 for bid in bids if bid >= price)
+            strict_supply = sum(1 for ask in asks if ask < price)
+            weak_supply = sum(1 for ask in asks if ask <= price)
+            assert strict_demand <= eq.quantity <= weak_demand
+            assert strict_supply <= eq.quantity <= weak_supply
 
 
 class TestMaximumWelfare:
@@ -282,25 +306,111 @@ class TestDataclassProperties:
         assert eq1 == eq2
 
     def test_hashable(self) -> None:
-        eq = Equilibrium(price_min=Decimal("5"), price_max=Decimal("10"), quantity=1)
-        {eq}  # Should not raise.
+        eq1 = Equilibrium(price_min=Decimal("5"), price_max=Decimal("10"), quantity=1)
+        eq2 = Equilibrium(price_min=Decimal("5"), price_max=Decimal("10"), quantity=1)
+        assert hash(eq1) == hash(eq2)
+        assert {eq1, eq2} == {eq1}
 
 
-class TestVernonSmithInducedValue:
-    """Cases from Vernon Smith's experimental economics (1962, Nobel Prize 2002).
+class TestInputValidation:
+    """NaN rejection: NaN admits no total order, so it must be refused."""
 
-    Smith's "induced value" methodology assigns private reservation prices
-    to subjects, creating controlled supply and demand. These tests replicate
-    canonical experimental designs.
+    def test_nan_bid_rejected(self) -> None:
+        with pytest.raises(ValueError, match="NaN"):
+            find_equilibrium([Decimal("NaN")], [Decimal("5")])
+
+    def test_nan_ask_rejected(self) -> None:
+        with pytest.raises(ValueError, match="NaN"):
+            find_equilibrium([1.0], [float("nan")])
+
+    def test_signaling_decimal_nan_rejected(self) -> None:
+        """Signaling NaNs must not leak Decimal's context-dependent exception."""
+        with pytest.raises(ValueError, match="NaN"):
+            find_equilibrium([Decimal("sNaN")], [Decimal("5")])
+
+    def test_nan_is_rejected_even_when_the_other_side_is_empty(self) -> None:
+        """Validation precedes the empty-input case, so bad input never reads as None."""
+        with pytest.raises(ValueError, match="NaN"):
+            find_equilibrium([float("nan")], [])
+
+    def test_nan_rejection_does_not_consume_a_valid_iterator_twice(self) -> None:
+        """Inputs are materialized once, so a generator of valid prices survives."""
+        eq = find_equilibrium((float(b) for b in (3, 1)), (float(a) for a in (2, 4)))
+        assert eq == Equilibrium(price_min=2.0, price_max=3.0, quantity=1)
+
+
+class TestOrderedProtocolContract:
+    """The declared protocol must be all that is actually required.
+
+    `find_equilibrium` sorts and calls `max`/`min`, which use `<` and `>`.
+    Python falls back to the reflected operation for those, so `__lt__` and
+    `__le__` really do suffice, and this test pins that down: an
+    implementation that reached for `>` directly, or for a sort key, would
+    break for a type providing no more than the protocol promises.
     """
 
-    def test_smith_1962_baseline(self) -> None:
-        """Approximate replication of Smith's original double auction experiment.
+    def test_type_implementing_only_the_protocol_is_accepted(self) -> None:
+        eq = find_equilibrium([_Bare(10), _Bare(8), _Bare(6)], [_Bare(5), _Bare(7), _Bare(9)])
+        assert eq is not None
+        assert (eq.price_min.value, eq.price_max.value, eq.quantity) == (7, 8, 2)
 
-        Symmetric supply and demand with clear competitive equilibrium.
-        The 4th buyer (bid=2.50) and 4th seller (ask=2.50) are exactly
-        indifferent, yielding a knife-edge equilibrium.
-        """
+    def test_public_type_hints_resolve_at_runtime(self) -> None:
+        """Postponed annotations remain usable by runtime introspection tools."""
+        assert set(get_type_hints(find_equilibrium)) == {"bids", "asks", "return"}
+
+
+class TestGenericPriceTypes:
+    """The algorithm is ordinal, so any totally ordered price type works."""
+
+    def test_int_prices(self) -> None:
+        eq = find_equilibrium([10, 8, 6], [5, 7, 9])
+        assert eq == Equilibrium(price_min=7, price_max=8, quantity=2)
+
+    def test_float_prices(self) -> None:
+        eq = find_equilibrium([10.5, 8.5], [5.5, 9.5])
+        assert eq == Equilibrium(price_min=8.5, price_max=9.5, quantity=1)
+
+    def test_fraction_prices(self) -> None:
+        eq = find_equilibrium([Fraction(3, 2)], [Fraction(1, 2)])
+        assert eq == Equilibrium(price_min=Fraction(1, 2), price_max=Fraction(3, 2), quantity=1)
+
+    def test_mutually_comparable_price_types_can_be_mixed(self) -> None:
+        eq = find_equilibrium([Fraction(3, 2)], [0.5])
+        assert eq == Equilibrium(price_min=0.5, price_max=Fraction(3, 2), quantity=1)
+
+    def test_infinities_are_ordered_values_not_nan(self) -> None:
+        eq = find_equilibrium([Decimal("Infinity")], [Decimal("-Infinity")])
+        assert eq == Equilibrium(
+            price_min=Decimal("-Infinity"),
+            price_max=Decimal("Infinity"),
+            quantity=1,
+        )
+
+    def test_generator_inputs(self) -> None:
+        eq = find_equilibrium((Decimal(b) for b in ("10", "8")), iter([Decimal("5")]))
+        assert eq == Equilibrium(price_min=Decimal("8"), price_max=Decimal("10"), quantity=1)
+
+    def test_empty_iterator_inputs(self) -> None:
+        no_bids: list[Decimal] = []
+        assert find_equilibrium(iter(no_bids), iter([Decimal("5")])) is None
+
+    def test_mutable_inputs_are_not_modified(self) -> None:
+        bids = [3, 1, 2]
+        asks = [6, 4, 5]
+        bids_before = bids.copy()
+        asks_before = asks.copy()
+
+        find_equilibrium(bids, asks)
+
+        assert bids == bids_before
+        assert asks == asks_before
+
+
+class TestStructuredStepSchedules:
+    """Hand-constructed schedules with sharp steps and marginal ties."""
+
+    def test_symmetric_schedule_with_marginal_equality(self) -> None:
+        """The fourth pair has zero surplus and the fifth has negative surplus."""
         # Buyers with decreasing valuations.
         bids = [Decimal(v) for v in ["3.25", "3.00", "2.75", "2.50", "2.25"]]
         # Sellers with increasing costs.
@@ -315,17 +425,9 @@ class TestVernonSmithInducedValue:
         assert eq.price_min == Decimal("2.50")
         assert eq.price_max == Decimal("2.50")
 
-    def test_swastika_design(self) -> None:
-        """The "swastika" supply-demand configuration.
-
-        Named for the shape when plotted: perfectly inelastic supply meets
-        perfectly inelastic demand at different quantities, creating a
-        step-function equilibrium region. Tests robustness to non-standard
-        curve shapes. (See Smith, 1976, "Experimental Economics".)
-        """
-        # Vertical demand: all buyers willing to pay up to 10.
+    def test_unequal_side_sizes_with_identical_values(self) -> None:
+        """Excess buyers at one value pin the price to their bid."""
         bids = [Decimal("10")] * 5
-        # Vertical supply: all sellers require at least 5.
         asks = [Decimal("5")] * 3
 
         eq = find_equilibrium(bids, asks)
@@ -338,20 +440,11 @@ class TestVernonSmithInducedValue:
         assert eq.price_max == Decimal("10")
 
 
-class TestMyersonSatterthwaite:
-    """Cases related to Myerson-Satterthwaite (1983) impossibility theorem.
-
-    The theorem shows no mechanism can achieve efficiency, incentive
-    compatibility, individual rationality, and budget balance when
-    reservation values are private. These tests probe boundary cases.
-    """
+class TestBilateralMarkets:
+    """Markets with exactly one potential trading pair."""
 
     def test_bilateral_trade_gains_exist(self) -> None:
-        """Single buyer, single seller with gains from trade.
-
-        The classic Myerson-Satterthwaite setup. With known values,
-        the competitive mechanism achieves efficiency.
-        """
+        """A single buyer and seller have strictly positive gains from trade."""
         eq = find_equilibrium([Decimal("100")], [Decimal("50")])
 
         assert eq is not None
@@ -361,11 +454,7 @@ class TestMyersonSatterthwaite:
         assert eq.price_max == Decimal("100")
 
     def test_bilateral_trade_no_gains(self) -> None:
-        """Single buyer, single seller with no gains from trade.
-
-        Impossibility doesn't apply: there's simply no efficient trade.
-        Equilibrium exists at quantity 0 with price in [50, 100].
-        """
+        """A single buyer and seller have strictly negative gains from trade."""
         eq = find_equilibrium([Decimal("50")], [Decimal("100")])
 
         assert eq is not None
@@ -377,7 +466,7 @@ class TestMyersonSatterthwaite:
         """Buyer valuation exactly equals seller cost.
 
         Zero surplus case: trade is weakly efficient but generates no gains.
-        The mechanism should still identify this as a valid equilibrium.
+        The function should still identify this as a valid equilibrium.
         """
         eq = find_equilibrium([Decimal("75")], [Decimal("75")])
 
@@ -386,15 +475,11 @@ class TestMyersonSatterthwaite:
         assert eq.price_min == eq.price_max == Decimal("75")
 
 
-class TestMarketPower:
-    """Monopoly, monopsony, and thin market cases."""
+class TestThinMarkets:
+    """One side or both sides contain very few agents."""
 
-    def test_monopolist_seller(self) -> None:
-        """Single seller facing multiple buyers.
-
-        In competitive equilibrium (price-taking), the monopolist has no
-        market power — price is determined by the marginal buyer's bid.
-        """
+    def test_single_seller_facing_multiple_buyers(self) -> None:
+        """The highest excluded bid supplies the lower price bound."""
         bids = [Decimal("100"), Decimal("80"), Decimal("60"), Decimal("40")]
         asks = [Decimal("10")]  # Single low-cost seller.
 
@@ -406,11 +491,8 @@ class TestMarketPower:
         assert eq.price_min == Decimal("80")
         assert eq.price_max == Decimal("100")
 
-    def test_monopsonist_buyer(self) -> None:
-        """Single buyer facing multiple sellers.
-
-        Symmetric to monopoly case.
-        """
+    def test_single_buyer_facing_multiple_sellers(self) -> None:
+        """The lowest excluded ask supplies the upper price bound."""
         bids = [Decimal("100")]  # Single high-value buyer.
         asks = [Decimal("10"), Decimal("30"), Decimal("50"), Decimal("70")]
 
@@ -455,55 +537,32 @@ class TestMarketPower:
         assert eq.price_max == Decimal("500000")
 
 
-class TestCoreStability:
-    """Tests related to core allocations and coalitional stability.
+class TestExcludedPairs:
+    """Pairs excluded from the maximal allocation have negative surplus."""
 
-    In a double auction, the competitive equilibrium is in the core:
-    no coalition can deviate and make all members better off.
-    """
-
-    def test_no_blocking_coalition_exists(self) -> None:
-        """Verify no subset of traders can profitably deviate.
-
-        A blocking coalition would be a set of buyers and sellers who
-        could trade among themselves at prices strictly better for all
-        than the equilibrium. In competitive equilibrium, no such
-        coalition exists.
-        """
+    def test_every_fully_excluded_pair_has_negative_surplus(self) -> None:
         bids = [Decimal("10"), Decimal("8"), Decimal("6"), Decimal("4")]
         asks = [Decimal("3"), Decimal("5"), Decimal("7"), Decimal("9")]
         eq = find_equilibrium(bids, asks)
 
-        assert eq is not None
+        assert eq == Equilibrium(price_min=Decimal("6"), price_max=Decimal("7"), quantity=2)
 
         bids_sorted = sorted(bids, reverse=True)
         asks_sorted = sorted(asks)
 
-        # Check that no excluded buyer-seller pair could profitably trade.
-        # Excluded buyers have indices >= eq.quantity in bids_sorted.
-        # Excluded sellers have indices >= eq.quantity in asks_sorted.
-        for i in range(eq.quantity, len(bids_sorted)):
-            for j in range(eq.quantity, len(asks_sorted)):
-                # If excluded buyer i and excluded seller j could trade...
-                if bids_sorted[i] >= asks_sorted[j]:
-                    # ...it would require displacing an included trader,
-                    # but included traders have higher bids / lower asks.
-                    # This is a contradiction, so this branch should not execute.
-                    assert bids_sorted[i] < asks_sorted[j]
+        # Excluded buyers and sellers are those at indices >= eq.quantity.
+        # Every excluded bid is below every excluded ask, because the best
+        # such bid is already below the best such ask.
+        for excluded_bid in bids_sorted[eq.quantity :]:
+            for excluded_ask in asks_sorted[eq.quantity :]:
+                assert excluded_bid < excluded_ask
 
 
-class TestLargeMarkets:
-    """Asymptotic behavior as market size grows.
-
-    In large markets, the law of large numbers implies the equilibrium
-    price interval shrinks and approaches the "true" competitive price.
-    """
+class TestLargeDeterministicMarkets:
+    """Larger inputs exercise scan boundaries and deterministic scaling."""
 
     def test_large_symmetric_market(self) -> None:
-        """Many buyers and sellers with uniform distributions.
-
-        As n → ∞, price_min and price_max should converge.
-        """
+        """One hundred symmetric integer steps clear at the central pair."""
         n = 100
         # Buyers: valuations from 100 down to 1.
         bids = [Decimal(101 - i) for i in range(1, n + 1)]
@@ -519,8 +578,8 @@ class TestLargeMarkets:
         assert eq.price_min == Decimal("50")
         assert eq.price_max == Decimal("51")
 
-    def test_price_interval_shrinks_with_n(self) -> None:
-        """Verify price interval width decreases as market grows."""
+    def test_interval_width_stays_constant_for_scaled_integer_steps(self) -> None:
+        """This construction has width one at every tested scale."""
         widths: list[Decimal] = []
 
         for n in [10, 50, 100, 200]:
@@ -530,17 +589,11 @@ class TestLargeMarkets:
             assert eq is not None
             widths.append(eq.price_max - eq.price_min)
 
-        # Width should be non-increasing (actually constant at 1 for this design).
-        for i in range(len(widths) - 1):
-            assert widths[i] >= widths[i + 1]
+        assert widths == [Decimal("1")] * 4
 
 
-class TestZeroMeasureMarginalTraders:
-    """Edge cases where the marginal trader has measure zero.
-
-    In continuous models, the marginal trader is a single point.
-    In discrete models, we must handle exact ties carefully.
-    """
+class TestMarginalTies:
+    """Exact equality at the margin permits indifferent rationing."""
 
     def test_all_traders_identical(self) -> None:
         """Every buyer and seller has the same reservation price.
@@ -569,11 +622,8 @@ class TestZeroMeasureMarginalTraders:
         assert eq.price_min == eq.price_max == Decimal("50")
 
 
-class TestHurwiczParticipation:
-    """Individual rationality / participation constraints (Hurwicz, 1972).
-
-    Every trader must weakly prefer participating to autarky.
-    """
+class TestIndividualRationality:
+    """Every selected trader weakly prefers trading to not trading."""
 
     def test_all_traders_satisfy_participation(self) -> None:
         """No trader is made worse off by the equilibrium allocation."""
@@ -596,19 +646,11 @@ class TestHurwiczParticipation:
                 assert p >= asks_sorted[i]
 
 
-class TestVickreyClarkeGroves:
-    """Properties related to VCG mechanism design.
-
-    While find_equilibrium implements Walrasian (price-based) clearing,
-    these tests verify properties that VCG mechanisms also satisfy.
-    """
+class TestEfficiencyAndSurplusAccounting:
+    """The selected quantity is efficient and surplus decomposes exactly."""
 
     def test_efficient_allocation(self) -> None:
-        """The equilibrium allocation maximizes total surplus.
-
-        This is the key efficiency property that VCG achieves via
-        dominant-strategy incentive compatibility.
-        """
+        """The equilibrium allocation maximizes total surplus."""
         bids = [Decimal("90"), Decimal("70"), Decimal("50"), Decimal("30")]
         asks = [Decimal("20"), Decimal("40"), Decimal("60"), Decimal("80")]
 
@@ -649,11 +691,12 @@ class TestVickreyClarkeGroves:
         assert buyer_surplus + seller_surplus == total_surplus
 
 
-class TestWalrasianClearing:
-    """Tests for true Walrasian market clearing (demand == supply).
+class TestExcludedTraderBounds:
+    """Excluded marginal agents can tighten either endpoint.
 
-    The price interval must ensure that at any price p in [price_min, price_max],
-    the quantity demanded equals the quantity supplied (no rationing needed).
+    At an endpoint, indifferent agents may be rationed. At a strict interior
+    price, no reservation price is crossed, so strict and weak demand and
+    supply are all exactly the reported quantity.
     """
 
     def test_excluded_buyer_constrains_price_min(self) -> None:
@@ -676,22 +719,13 @@ class TestWalrasianClearing:
         assert eq.price_max == Decimal("9")
 
     def test_excluded_seller_constrains_price_max(self) -> None:
-        """Price interval must account for excluded seller's ask.
+        """Price interval must account for the excluded seller's ask.
 
-        Mirror of the buyer case:
-        - Bids: [100, 7, 1], Asks: [8, 9, 10]
-        - Efficient q = 2 (7 >= 9? No. Let me recalculate...)
-        Actually: bids sorted desc [100, 7, 1], asks sorted asc [8, 9, 10]
-        - k=1: 100 >= 8 ✓
-        - k=2: 7 >= 9? No.
-        So q = 1. Let me design a better example.
-
-        Better example:
-        - Bids: [100, 93, 1], Asks: [8, 9, 10]
-        - q = 2 (93 >= 9, but 1 < 10)
-        - Naive interval [9, 93]
-        - At p = 10: supply = 3, demand = 2 → excess supply
-        - Correct: price_max <= 10 (excluded seller's ask)
+        Mirror image of the excluded-buyer case:
+        - Bids [100, 93, 1], asks [8, 9, 10], so q = 2 (93 >= 9, but 1 < 10).
+        - The naive interval [a_2, b_2] = [9, 93] is too wide: at p = 10 the
+          third seller would supply while only two buyers demand.
+        - So price_max must be at most 10, the excluded seller's ask.
         """
         bids = [Decimal("100"), Decimal("93"), Decimal("1")]
         asks = [Decimal("8"), Decimal("9"), Decimal("10")]
@@ -717,9 +751,9 @@ class TestWalrasianClearing:
         assert eq.price_max <= Decimal("14")
 
     @pytest.mark.parametrize(
-        "bids,asks",
+        ("bids", "asks"),
         [
-            # The counterexample from the critique
+            # Excluded buyer constrains.
             (
                 [Decimal("10"), Decimal("9"), Decimal("8")],
                 [Decimal("1"), Decimal("7"), Decimal("100")],
@@ -769,9 +803,10 @@ class TestAsymmetricMarkets:
 
         eq = find_equilibrium(bids, asks)
 
-        assert eq is not None
-        # At most 5 trades (limited by seller count).
-        assert eq.quantity <= 5
+        # All 5 sellers trade, the short side. The price is pinned from below
+        # by the sixth buyer's bid of 75 rather than by the marginal ask of
+        # 50, since 15 buyers are left over.
+        assert eq == Equilibrium(price_min=Decimal("75"), price_max=Decimal("80"), quantity=5)
 
     def test_few_buyers_many_sellers(self) -> None:
         """Excess supply: more sellers than buyers."""
@@ -780,6 +815,7 @@ class TestAsymmetricMarkets:
 
         eq = find_equilibrium(bids, asks)
 
-        assert eq is not None
-        # At most 5 trades (limited by buyer count).
-        assert eq.quantity <= 5
+        # All 5 buyers trade, the short side. Symmetrically, the price is
+        # pinned from above by the sixth seller's ask of 35 rather than by
+        # the marginal bid of 60.
+        assert eq == Equilibrium(price_min=Decimal("30"), price_max=Decimal("35"), quantity=5)

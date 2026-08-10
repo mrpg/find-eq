@@ -1,41 +1,131 @@
 [project]
 name = "find-eq"
 version = "0.1.0"
-description = "Add your description here"
+description = "Find the competitive equilibrium in double auction markets."
 readme = "README.md"
 authors = [
     { name = "Max R. P. Grossmann", email = "m@max.pm" }
 ]
 requires-python = ">=3.13"
 license = "0BSD"
+license-files = ["LICENSE"]
 dependencies = []
 
+[project.urls]
+Repository = "https://github.com/mrpg/find-eq"
+Issues = "https://github.com/mrpg/find-eq/issues"
+Documentation = "https://github.com/mrpg/find-eq/blob/master/docs/proofs.md"
+
 [dependency-groups]
-dev = ["pytest>=8", "pytest-cov>=6", "black>=24", "mypy>=1.10"]
+dev = [
+    "black>=26",
+    "hypothesis>=6",
+    "isort>=8",
+    "mypy>=2",
+    "pytest>=9",
+    "pytest-cov>=7",
+    "ruff>=0.16",
+]
 
 [tool.black]
 line-length = 100
 target-version = ["py313"]
 
+[tool.isort]
+profile = "black"
+line_length = 100
+py_version = 313
+src_paths = ["src", "tests"]
+known_first_party = ["find_eq"]
+
+[tool.ruff]
+line-length = 100
+target-version = "py313"
+src = ["src", "tests"]
+
+[tool.ruff.lint]
+select = ["ALL"]
+ignore = [
+    # Rules that conflict with the black formatter.
+    "COM812", # missing-trailing-comma
+    "COM819", # prohibited-trailing-comma
+    "D206",   # docstring-tab-indentation
+    "D300",   # triple-single-quotes
+    "E111",   # indentation-with-invalid-multiple
+    "E114",   # indentation-with-invalid-multiple-comment
+    "E117",   # over-indented
+    "ISC001", # single-line-implicit-string-concatenation
+    "ISC002", # multi-line-implicit-string-concatenation
+    "Q000",   # bad-quotes-inline-string
+    "Q001",   # bad-quotes-multiline-string
+    "Q002",   # bad-quotes-docstring
+    "Q003",   # avoidable-escaped-quote
+    "W191",   # tab-indentation
+
+    # Deliberate project conventions.
+    "FURB157", # verbose-decimal-constructor: prices are always written as
+               # Decimal("...") so that the quoted form, the only one that is
+               # exact for non-integers, stays the unthinking habit
+]
+
+[tool.ruff.lint.pydocstyle]
+convention = "google"
+
+[tool.ruff.lint.isort]
+known-first-party = ["find_eq"]
+
+[tool.ruff.lint.per-file-ignores]
+"tests/**" = [
+    "D1",      # undocumented-*: descriptive test names are the documentation
+    "PLR2004", # magic-value-comparison: literal fixtures are the point of a test
+    "S101",    # assert: pytest's assertion mechanism
+]
+
 [tool.mypy]
 python_version = "3.13"
+files = ["src", "tests"]
 strict = true
-warn_redundant_casts = true
-warn_unused_ignores = true
+# Beyond --strict.
+disallow_any_unimported = true
+warn_unreachable = true
+local_partial_types = true
+enable_error_code = [
+    "deprecated",
+    "explicit-override",
+    "ignore-without-code",
+    "mutable-override",
+    "narrowed-type-not-subtype",
+    "possibly-undefined",
+    "redundant-expr",
+    "redundant-self",
+    "truthy-bool",
+    "truthy-iterable",
+    "unimported-reveal",
+    "unused-awaitable",
+]
+pretty = true
 
 [tool.pytest.ini_options]
-addopts = "--cov=find_eq --cov-report=term-missing --cov-fail-under=100"
+minversion = "9.0"
+# Doctests are collected from the package and from README.md, so that no
+# documented example can drift away from what the code actually does.
+addopts = "--strict-config --strict-markers --doctest-modules --doctest-glob=*.md --cov=find_eq --cov-report=term-missing --cov-fail-under=100"
+doctest_optionflags = ["ELLIPSIS", "IGNORE_EXCEPTION_DETAIL"]
+testpaths = ["tests", "src", "README.md"]
+filterwarnings = ["error"]
+xfail_strict = true
 
 [tool.coverage.run]
 branch = true
 source = ["src/find_eq"]
 
 [tool.coverage.report]
-exclude_lines = [
-    "pragma: no cover",
-    "if TYPE_CHECKING:",
-]
+fail_under = 100
+show_missing = true
+
+[tool.uv.build-backend]
+source-include = ["docs/**", "tests/**"]
 
 [build-system]
-requires = ["uv_build>=0.9.21,<0.10.0"]
+requires = ["uv_build>=0.11,<0.13"]
 build-backend = "uv_build"
